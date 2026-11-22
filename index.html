@@ -2549,27 +2549,50 @@ function filteredVerbs(ignoreMastered = false, sourceList = DECK) {
   return base;
 }
 
+function shuffleArray(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
 function rebuildQueue(forceAll = false) {
   const now = Date.now();
   let pool = forceAll ? filteredVerbs(false).slice() : filteredVerbs(true).slice();
   if (!pool.length && !forceAll && activeCluster === "ALL") {
     pool = DECK.filter(item => getCardData(item.cardId).due <= now);
   }
-  pool.sort((a, b) => {
-    const da = getCardData(a.cardId);
-    const db = getCardData(b.cardId);
-    // Struggling cards first, then overdue cards, then new cards
-    if (db.lapses !== da.lapses) return db.lapses - da.lapses;
-    const aDue = da.due <= now ? 0 : 1;
-    const bDue = db.due <= now ? 0 : 1;
-    if (aDue !== bDue) return aDue - bDue;
-    // Apply training weightage: Verbs > Adjectives > Prepositions > Adverbs > Nouns
-    const pw = posPriority(b.pos) - posPriority(a.pos);
-    if (pw !== 0) return pw;
-    if (da.due !== db.due) return da.due - db.due;
-    return da.interval - db.interval;
+
+  // Bucket by: (1) struggling vs due vs ahead, (2) POS priority (Verbs > Adj > Prep > Adv > Noun)
+  const buckets = new Map();
+  pool.forEach(item => {
+    const d = getCardData(item.cardId);
+    const tier = d.lapses > 0 ? 0 : (d.due <= now ? 1 : 2);
+    const key = `${tier}_${10 - posPriority(item.pos)}`;
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(item);
   });
-  queue = pool;
+
+  const sortedKeys = Array.from(buckets.keys()).sort();
+  let result = [];
+  sortedKeys.forEach(k => {
+    const arr = shuffleArray(buckets.get(k));
+    // Anti-clump pass: avoid consecutive cards of the same base verb
+    for (let i = 1; i < arr.length; i++) {
+      if (arr[i].v === arr[i - 1].v) {
+        for (let j = i + 1; j < arr.length; j++) {
+          if (arr[j].v !== arr[i - 1].v) {
+            [arr[i], arr[j]] = [arr[j], arr[i]];
+            break;
+          }
+        }
+      }
+    }
+    result = result.concat(arr);
+  });
+
+  queue = result;
   sessionTotal = queue.length;
   sessionDone = 0;
 }
@@ -2731,7 +2754,7 @@ function gradeCard(level) {
   const now = Date.now();
   const d = getCardData(item.cardId);
   const res = computeNext(d, level);
-  state.cards[item.v] = {
+  state.cards[item.cardId] = {
     due: now + res.delayMs,
     interval: res.interval,
     ease: res.ease,
